@@ -1,0 +1,86 @@
+"""Stand-ins for providers, the stage and the speaker, for tests and the virtual device."""
+import asyncio
+import array
+import math
+
+from companion.providers import ProviderError
+
+
+class FakeLLM:
+    def __init__(self, reply="Hello there. How are you today?", pieces=7, delay=0.0, fail=None, hang=False):
+        self.reply = reply
+        self.pieces = pieces
+        self.delay = delay
+        self.fail = fail
+        self.hang = hang
+        self.calls = []
+
+    async def stream(self, system, messages):
+        """Streams `reply`; if `reply` is a list, each call takes the next one."""
+        self.calls.append((system, list(messages)))
+        reply = self.reply
+        if isinstance(reply, list):
+            reply = reply[min(len(self.calls) - 1, len(reply) - 1)]
+        if self.hang:
+            await asyncio.sleep(3600)
+        if self.fail == "start":
+            raise ProviderError("the fake model failed", retry=True)
+        step = max(1, len(reply) // self.pieces)
+        for i in range(0, len(reply), step):
+            if self.delay:
+                await asyncio.sleep(self.delay)
+            yield reply[i:i + step]
+            if self.fail == "middle" and i > len(reply) // 2:
+                raise ProviderError("the fake model broke off")
+
+
+class FakeTTS:
+    rate = 24000
+
+    def __init__(self, seconds_per_char=0.01, fail_on=None):
+        self.seconds_per_char = seconds_per_char
+        self.fail_on = fail_on
+        self.texts = []
+
+    async def stream(self, text):
+        if self.fail_on and self.fail_on in text:
+            raise ProviderError("the fake voice failed")
+        self.texts.append(text)
+        n = int(self.rate * self.seconds_per_char * len(text))
+        samples = array.array("h", (int(8000 * math.sin(i / 7.0)) for i in range(n)))
+        data = samples.tobytes()
+        for i in range(0, len(data), 4800):
+            yield data[i:i + 4800]
+            await asyncio.sleep(0)
+
+
+class FakeStage:
+    def __init__(self):
+        self.commands = []
+        self.params = set()
+        self.gestures = ["nod", "shake", "bow", "tilt", "wave"]
+        self.emotion_map = {}
+
+    def send(self, command):
+        self.commands.append(command)
+
+    def state(self, name):
+        self.commands.append({"state": name})
+
+    def mouth(self, level):
+        self.commands.append({"mouth": level})
+
+    def express(self, emotion, intensity=1.0):
+        self.commands.append({"express": emotion})
+
+    def random_gestures(self, on):
+        self.commands.append({"random_gestures": on})
+
+    def blink(self):
+        self.commands.append({"blink": True})
+
+    def gesture(self, name):
+        self.commands.append({"gesture": name})
+
+    def states(self):
+        return [c["state"] for c in self.commands if "state" in c]
